@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 from google import genai
 from google.genai import types
+from serpapi.google_search import GoogleSearch
 import os
 from dotenv import load_dotenv
 
@@ -9,59 +10,87 @@ load_dotenv()
 # On récupère la date pour le prompt
 today = date.today()
 yesterday = today - timedelta(days=1)
+serpAiKey = os.getenv('SERPAI_KEY')
+SITES_CIBLES = ["walfoot.be", "lequipe.fr/Football"]
+MOTS_CLES = "match"
 def getFootballInfo():
     """
     Synchronous version - simpler to understand and use
     """
     # Create the client
     client = genai.Client(api_key=os.getenv('GEMINI_KEY'))
-    
+    all_articles = []
+    seen_urls = set() # Trying to avoid doubles
+    # We look through the sites to see 
+    for site in SITES_CIBLES:
+        # Requête SerpAPI avec filtres temporels et site-specific
+        params = {
+            "q": f'site:{site} {MOTS_CLES}',
+            "api_key": serpAiKey,
+            "engine": "google",
+            "tbm": "nws",  # Onglet "Actualités" de Google
+            "tbs":f"qdr:d",  # 24 dernières heures
+            "num": 5,  # On en récupère plus pour filtrer après
+            "hl": "fr"  # Résultats en français
+        }
+        search = GoogleSearch(params)
+        results = search.get_dict()
     # Send the prompt to Gemini
-    response = client.models.generate_content(
-        model='gemini-2.0-flash',
-        contents="""Effectue une recherche approfondie sur Internet des actualités les plus récentes concernant le football. Concentre-toi spécifiquement sur les sources d'informations suivantes :
-    *   https://www.walfoot.be/
-    *   https://www.lequipe.fr/Football/
+        if "news_results" in results and results["news_results"]:
+                for article in results["news_results"]:
+                    url = article.get("link", "")
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        all_articles.append({
+                            "title": article.get("title", ""),
+                            "link": url,
+                            "source": article.get("source", ""),
+                            "date": article.get("date", ""),
+                            "snippet": article.get("snippet", ""),
+                        })
+    if all_articles:
+        print(all_articles[0])
+        # Format articles for the prompt
+        articles_text = "\n\n".join([
+            f"Title: {a['title']}\nSource: {a['source']}\nDate: {a['date']}\nSnippet: {a['snippet']}\nLink: {a['link']}"
+            for a in all_articles[:15]  # Limit to top 15 to avoid token limits
+        ])
+        
+        prompt = f"""Voici les dernières actualités sportives du football entre {yesterday} et {today}:
 
-    Analyse le contenu de ces sites pour identifier les articles d'actualité publiés au cours des dernières 24 heures. Privilégie les articles traitant des sujets suivants (liste non exhaustive, mais indicative) :
+            {articles_text}
 
-    *   Résultats de matchs récents
-    *   Blessures de joueurs
-    *   Analyses de matchs
-    *   Informations sur les compétitions (Ligue 1, Ligue des Champions, etc.)
+            Peux-tu créer un résumé concis des informations les plus importantes dans ces articles?
+            Organise le résumé par catégories:
+            1. Résultats de matchs importants
+            2. Blessures et suspensions de joueurs
+            3. Transferts et rumeurs
+            4. Autres actualités notables
 
-    Pour chaque article d'actualité pertinent trouvé, fournis les informations suivantes :
-
-    1.  **Titre de l'article :** (Le titre exact de l'article)
-    2.  **Lien URL :** (L'adresse web complète de l'article)
-    3.  **Date et heure de publication :** (Indiquer la date et l'heure de publication de l'article, si disponibles)
-    4.  **Source :** (Le nom du site web d'où provient l'article)
-    5.  **Résumé :** (Un court résumé de 2-3 phrases de l'article, mettant en évidence les points clés)
-
-    Présente les résultats sous forme de liste structurée.
-
-    **Important :**
-
-    *   Ne recherche pas d'informations en dehors des sites web spécifiés.
-    *   Ne choisis que des articles publiés entre {} et {}.
-    *   Assure-toi que les liens URL fournis sont valides et fonctionnels.
-    *   Ignore les articles non pertinents (par exemple, les articles d'opinion sans contenu informatif direct).
-    *   Retourne un maximum de 10 articles.""".format(yesterday,today)
-    )
+            Écris le résumé en français en 400-500 mots maximum.
+            """
+        
+        
+        
+        print("\n===== RÉSUMÉ DES ACTUALITÉS FOOTBALL =====\n")
+        
+    else:
+        print("Aucun article trouvé pour la période spécifiée.")
+    
+    # Close the client
+    return all_articles
+    
     
     # Print the response
-    print(response)
     
     # Close the client
 
-    
-# Fetch links using gemini api
-# Scrape the articles
-# Use gemini to summarize the articles
-# Send emails (using mailjet ?)
-# Mettre sur un serveur ?
-
+  
 # Run the synchronous function
 if __name__ == "__main__":
     getFootballInfo()
 
+# Problème la maintenant sur la façon de faire : 
+    # Récupère beaucoup trop de lien car fait trop de recherche
+    # Et si j'essayais juste de récupèrer 5 liens par site.
+    # Quels mots-clés utilisé ?
